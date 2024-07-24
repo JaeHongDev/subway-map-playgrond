@@ -4,7 +4,6 @@
 # .profile 파일에 환경 변수 추가
 echo 'HISTTIMEFORMAT="%F %T -- "' >> ~/.profile
 echo 'export HISTTIMEFORMAT' >> ~/.profile
-echo 'export TMOUT=1200' >> ~/.profile
 
 # .profile 파일을 적용
 source ~/.profile
