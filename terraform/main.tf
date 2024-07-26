@@ -48,7 +48,8 @@ resource "aws_subnet" "internal-a" {
   vpc_id = aws_vpc.main-vpc.id
   cidr_block = "192.168.0.128/27"
   availability_zone = "ap-northeast-2a"
-  tags = { Name = "내부망 a 가용영역"}
+  map_public_ip_on_launch = true
+  tags = { Name = "관리망 a 가용영역"}
 }
 
 resource "aws_subnet" "internal-c" {
@@ -64,16 +65,19 @@ resource "aws_subnet" "internal-c" {
 # 보안 그룹
 # *************************************************
 
-resource "aws_security_group" "allow-ssh" {
+
+# bastion security group
+resource "aws_security_group" "bastion-ssh" {
+
   vpc_id = aws_vpc.main-vpc.id
-  tags = { Name = "ssh 허용"}
+
+  tags = { Name = "베스천 서버에서 접근하는 ssh"}
 
   ingress {
     protocol = "tcp"
     to_port = 22
     from_port = 22
     cidr_blocks = ["175.215.120.104/32"]
-
   }
 
   ingress {
@@ -92,8 +96,38 @@ resource "aws_security_group" "allow-ssh" {
 
 }
 
+# 베스천 서버에서 접근 가능한 보안 그룹
+resource "aws_security_group" "allow-bastion-ssh" {
+  vpc_id = aws_vpc.main-vpc.id
+
+  tags = { Name = "베스천 서버의 접근 허용"}
+
+  ingress {
+    protocol = "tcp"
+    to_port = 22
+    from_port = 22
+    security_groups = [aws_security_group.bastion-ssh.id]
+  }
+
+  ingress {
+    protocol = "icmp"
+    to_port = -1
+    from_port = -1
+    security_groups = [aws_security_group.bastion-ssh.id]
+  }
+
+  egress {
+    to_port = 0
+    from_port = 0
+    protocol = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+}
+
+
 # *************************************************
-# 라우팅 테이블
+# public 라우팅 테이블
 # *************************************************
 
 resource "aws_route_table" "route-table"{
@@ -106,6 +140,21 @@ resource "aws_route_table" "route-table"{
 
 
   tags = { Name = "미션 라우팅 테이블"}
+}
+
+# *************************************************
+# private 라우팅 테이블
+# *************************************************
+
+resource "aws_route_table" "private-route-table" {
+  vpc_id = aws_vpc.main-vpc.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_nat_gateway.private-nat-gateway.id
+  }
+
+  tags = { Name = "미션 내부망 라우팅 테이블"}
 }
 
 
@@ -126,10 +175,30 @@ resource "aws_internet_gateway" "internet-gateway" {
 # 서브넷 - 라우팅 테이블 연결
 # *************************************************
 
+# public
 resource "aws_route_table_association" "associate-public-route-table" {
   route_table_id = aws_route_table.route-table.id
   subnet_id = aws_subnet.public-a.id
 }
+
+
+resource "aws_route_table_association" "associate-public-route-table-1" {
+  route_table_id = aws_route_table.route-table.id
+  subnet_id = aws_subnet.public-c.id
+}
+
+resource "aws_route_table_association" "associate-public-route-table-2" {
+  route_table_id = aws_route_table.route-table.id
+  subnet_id = aws_subnet.internal-a.id
+}
+
+# private
+resource "aws_route_table_association" "associate-private-route-table" {
+  route_table_id = aws_route_table.private-route-table.id
+  subnet_id = aws_subnet.internal-c.id
+}
+
+
 
 
 
@@ -141,7 +210,7 @@ resource "aws_route_table_association" "associate-public-route-table" {
 resource "aws_instance" "application-1" {
   ami = "ami-062cf18d655c0b1e8" # 우분투 이미지
   subnet_id = aws_subnet.public-a.id
-  instance_type = "t2.medium"
+  instance_type = "t3.small"
 
   key_name = "playground"
 
@@ -150,7 +219,7 @@ resource "aws_instance" "application-1" {
   }
 
   security_groups = [
-    aws_security_group.allow-ssh.id
+    aws_security_group.allow-bastion-ssh.id
   ]
 
   tags = { Name ="애플리케이션1"}
@@ -163,15 +232,35 @@ resource "aws_instance" "application-1" {
 resource "aws_instance" "db-1"{
   ami = "ami-062cf18d655c0b1e8" # 우분투 이미지
   subnet_id = aws_subnet.internal-c.id
-  instance_type = "t2.medium"
+  instance_type = "t3.small"
+
+  key_name = "playground"
 
   security_groups = [
-    aws_security_group.allow-ssh.id
+    aws_security_group.allow-bastion-ssh.id
   ]
-
 
   tags = { Name ="데이터베이스"}
 
+}
+
+# *************************************************
+# EC2 관리망 a 가용영역 ()
+# *************************************************
+
+resource "aws_instance" "bastion-1" {
+  ami = "ami-062cf18d655c0b1e8" # 우분투 이미지
+  subnet_id = aws_subnet.internal-a.id
+  instance_type = "t3.micro"
+
+  key_name = "playground"
+
+
+  security_groups = [
+    aws_security_group.bastion-ssh.id
+  ]
+
+  tags = { Name = "베스천 서버"}
 }
 
 
@@ -184,4 +273,17 @@ resource "aws_eip" "private-ec2-eip" {
   instance = aws_instance.db-1.id
 }
 
+resource "aws_eip" "public-ng-eip" {
+  vpc = true
+}
 
+# *************************************************
+# ** nat gateway
+# *************************************************
+
+resource "aws_nat_gateway" "private-nat-gateway" {
+  allocation_id = aws_eip.public-ng-eip.id
+  subnet_id = aws_subnet.public-c.id
+
+  tags = { Name = "미션 nat 게이트웨이"}
+}
